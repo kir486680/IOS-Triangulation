@@ -22,77 +22,98 @@ Mat LaneDetector::detect_lane(Mat image1, Mat image2) {
     //Mat descriptors_2;
     //descriptor->compute (image2, keypoints_2, descriptors_2 );
     
-    cout<<image1.size();
-    std::vector<KeyPoint> keypoints_1, keypoints_2;
-    Mat descriptors_1, descriptors_2;
-    Ptr<FeatureDetector> detector = ORB::create();
-    Ptr<DescriptorExtractor> descriptor = ORB::create();
-    detector->detect ( image1,keypoints_1 );
-    detector->detect ( image2,keypoints_2 );
-    
-    //-- 第二步:根据角点位置计算 BRIEF 描述子
-    descriptor->compute ( image1, keypoints_1, descriptors_1 );
-    descriptor->compute ( image2, keypoints_2, descriptors_2 );
-    
-    BFMatcher matcher(NORM_L2);
-    std::vector<vector<DMatch> > knn_matches;
-    matcher.knnMatch(descriptors_2, descriptors_2, knn_matches,2);
-    const float ratio_thresh = 0.75f;
-    std::vector<DMatch> good_matches;
-    for (size_t i = 0; i < knn_matches.size(); i++)
-    {
-        if (knn_matches[i][0].distance < ratio_thresh * knn_matches[i][1].distance)
+    cv::Mat K = (cv::Mat_<float>(3,3) <<  500.f,   0.f, image1.cols / 2.f,
+                                            0.f, 500.f, image1.rows / 2.f,
+                                            0.f,   0.f,               1.f);
+
+    vector<cv::KeyPoint> kpts_vec1, kpts_vec2;
+    cv::Mat desc1, desc2;
+    cv::Ptr<cv::AKAZE> akaze = cv::AKAZE::create();
+
+    // extract feature points and calculate descriptors
+    akaze -> detectAndCompute(image1, cv::noArray(), kpts_vec1, desc1);
+    akaze -> detectAndCompute(image2, cv::noArray(), kpts_vec2, desc2);
+
+
+    cv::BFMatcher* matcher = new cv::BFMatcher(cv::NORM_L2, false);
+    // cross check flag set to false
+    // because i do cross-ratio-test match
+    vector< vector<cv::DMatch> > matches_2nn_12, matches_2nn_21;
+    matcher->knnMatch( desc1, desc2, matches_2nn_12, 2 );
+    matcher->knnMatch( desc2, desc1, matches_2nn_21, 2 );
+    const double ratio = 0.8;
+
+    vector<cv::Point2f> selected_points1, selected_points2;
+
+    for(int i = 0; i < matches_2nn_12.size(); i++) { // i is queryIdx
+      if( matches_2nn_12[i][0].distance/matches_2nn_12[i][1].distance < ratio
+          and
+          matches_2nn_21[matches_2nn_12[i][0].trainIdx][0].distance
+            / matches_2nn_21[matches_2nn_12[i][0].trainIdx][1].distance < ratio )
+      {
+        if(matches_2nn_21[matches_2nn_12[i][0].trainIdx][0].trainIdx
+              == matches_2nn_12[i][0].queryIdx)
         {
-            good_matches.push_back(knn_matches[i][0]);
+          selected_points1.push_back(kpts_vec1[matches_2nn_12[i][0].queryIdx].pt);
+          selected_points2.push_back(
+              kpts_vec2[matches_2nn_21[matches_2nn_12[i][0].trainIdx][0].queryIdx].pt
+              );
         }
+      }
     }
-    Mat img_matches;
-    drawMatches( image1, keypoints_1, image2, keypoints_2, good_matches, img_matches, Scalar::all(-1),Scalar::all(-1), std::vector<char>(), DrawMatchesFlags::NOT_DRAW_SINGLE_POINTS );
-    
-    if (good_matches.size() !=0){
-        std::vector<Point2f> obj;
-        std::vector<Point2f> scene;
-        for( size_t i = 0; i < good_matches.size(); i++ )
-        {
-            //-- Get the keypoints from the good matches
-            obj.push_back( keypoints_1[ good_matches[i].queryIdx ].pt );
-            scene.push_back( keypoints_2[ good_matches[i].trainIdx ].pt );
-        }
-        
-        Mat H = findHomography( obj, scene, RANSAC );
-        std::vector<cv::Mat> Rs, Ts;
-        cv::Mat K(3,3,CV_64F,x);
-        cv::decomposeHomographyMat(H,
-                                   K,
-                                   Rs, Ts,
-                                   cv::noArray());
-        //cout<< Rs.size() <<endl;
-        //cout<< Ts[0]<<endl;
-        //https://stackoverflow.com/questions/22334023/how-to-calculate-3d-object-points-from-2d-image-points-using-stereo-triangulatio
-        Mat proj1;
-        Mat proj2;
-        cv::Mat I = cv::Mat::eye(3, 3, CV_32FC1);
-        Mat zeros = Mat::zeros(3, 1, CV_64FC1);
-        cv::Mat matArray[] = { I,
-                               zeros,};
-        cv::Mat out;
-        cv::hconcat( matArray,out );
-        cout<<out.size()<<endl;
-        
-        hconcat(I, 2, proj1);
-        
-        //hconcat(Rs[0], Ts[0], proj2);
-        
-        cout<<proj1.size()<<endl;
-    
-        cout<<I<<endl;
+
+    cout<<selected_points1.size()<<endl;
+    cout<<selected_points2.size()<<endl;
+    cv::Mat Kd;
+    K.convertTo(Kd, CV_64F);
+
+    cv::Mat mask; // unsigned char array
+    cv::Mat E = cv::findEssentialMat(selected_points1, selected_points2, Kd.at<double>(0,0),
+                             // cv::Point2f(0.f, 0.f),
+                             cv::Point2d(image1.cols/2., image1.rows/2.),
+                             cv::RANSAC, 0.999, 1.0, mask);
+    // E is CV_64F not 32F
+    cout<<E.size()<<endl;
+    vector<cv::Point2f> inlier_match_points1, inlier_match_points2;
+    for(int i = 0; i < mask.rows; i++) {
+      if(mask.at<unsigned char>(i)){
+        inlier_match_points1.push_back(selected_points1[i]);
+        inlier_match_points2.push_back(selected_points2[i]);
+      }
     }
-    //cout<<descriptors_2;
+    mask.release();
+    cv::Mat R, t;
+    cv::recoverPose(E,
+                    inlier_match_points1,
+                    inlier_match_points2,
+                    R, t, Kd.at<double>(0,0),
+                    // cv::Point2f(0, 0),
+                    cv::Point2d(image1.cols/2., image1.rows/2.),
+                    mask);
+    // R,t is CV_64F not 32F
+
+    vector<cv::Point2d> triangulation_points1, triangulation_points2;
+    for(int i = 0; i < mask.rows; i++) {
+      if(mask.at<unsigned char>(i)){
+        triangulation_points1.push_back
+                     (cv::Point2d((double)inlier_match_points1[i].x,(double)inlier_match_points1[i].y));
+        triangulation_points2.push_back
+                     (cv::Point2d((double)inlier_match_points2[i].x,(double)inlier_match_points2[i].y));
+      }
+    }
+
+    cv::Mat Rt0 = cv::Mat::eye(3, 4, CV_64FC1);
+    cv::Mat Rt1 = cv::Mat::eye(3, 4, CV_64FC1);
+    R.copyTo(Rt1.rowRange(0,3).colRange(0,3));
+    t.copyTo(Rt1.rowRange(0,3).col(3));
+
+
+    cv::Mat point3d_homo;
+    cv::triangulatePoints(Kd * Rt0, Kd * Rt1,
+                          triangulation_points1, triangulation_points2,
+                          point3d_homo);
+    cout<<point3d_homo.size()<<endl;
     
-    //drawMatches(image1, keypoints_1, image2, keypoints_2, match1, img_matches1);
-    
-    
-    
-    return img_matches;
+    return image1;
 }
 

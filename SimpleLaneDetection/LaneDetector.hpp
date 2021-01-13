@@ -20,5 +20,5 @@ class LaneDetector {
      */
     Mat detect_lane(Mat image1, Mat image2);
     
-
+    Mat cv_matmul(Mat A, Mat B);
 };

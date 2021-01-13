@@ -48,13 +48,51 @@ Mat LaneDetector::detect_lane(Mat image1, Mat image2) {
     }
     Mat img_matches;
     drawMatches( image1, keypoints_1, image2, keypoints_2, good_matches, img_matches, Scalar::all(-1),Scalar::all(-1), std::vector<char>(), DrawMatchesFlags::NOT_DRAW_SINGLE_POINTS );
-
-
+    
+    if (good_matches.size() !=0){
+        std::vector<Point2f> obj;
+        std::vector<Point2f> scene;
+        for( size_t i = 0; i < good_matches.size(); i++ )
+        {
+            //-- Get the keypoints from the good matches
+            obj.push_back( keypoints_1[ good_matches[i].queryIdx ].pt );
+            scene.push_back( keypoints_2[ good_matches[i].trainIdx ].pt );
+        }
+        
+        Mat H = findHomography( obj, scene, RANSAC );
+        std::vector<cv::Mat> Rs, Ts;
+        cv::Mat K(3,3,CV_64F,x);
+        cv::decomposeHomographyMat(H,
+                                   K,
+                                   Rs, Ts,
+                                   cv::noArray());
+        //cout<< Rs.size() <<endl;
+        //cout<< Ts[0]<<endl;
+        //https://stackoverflow.com/questions/22334023/how-to-calculate-3d-object-points-from-2d-image-points-using-stereo-triangulatio
+        Mat proj1;
+        Mat proj2;
+        cv::Mat I = cv::Mat::eye(3, 3, CV_32FC1);
+        Mat zeros = Mat::zeros(3, 1, CV_64FC1);
+        cv::Mat matArray[] = { I,
+                               zeros,};
+        cv::Mat out;
+        cv::hconcat( matArray,out );
+        cout<<out.size()<<endl;
+        
+        hconcat(I, 2, proj1);
+        
+        //hconcat(Rs[0], Ts[0], proj2);
+        
+        cout<<proj1.size()<<endl;
+    
+        cout<<I<<endl;
+    }
     //cout<<descriptors_2;
     
     //drawMatches(image1, keypoints_1, image2, keypoints_2, match1, img_matches1);
-
+    
     
     
     return img_matches;
 }
+
